@@ -1,6 +1,8 @@
 const { Connection, PublicKey } = require('@solana/web3.js');
 const { LIQUIDITY_STATE_LAYOUT_V4 } = require('@raydium-io/raydium-sdk');
 
+// Real-time pool monitoring using free/standard Solana WebSocket APIs
+// No premium subscriptions required - works with any Solana RPC provider
 // Configuration - use your existing environment variables
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const RAYDIUM_PROGRAM_ID = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
@@ -159,113 +161,7 @@ class RealTimePoolMonitor {
     }
 }
 
-// Enhanced WebSocket implementation for premium users
-class HeliusEnhancedMonitor {
-    constructor(apiKey, onNewPool) {
-        this.apiKey = apiKey;
-        this.onNewPool = onNewPool;
-        this.ws = null;
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 10;
-    }
 
-    connect() {
-        const WebSocket = require('ws');
-        
-        this.ws = new WebSocket(`wss://atlas-mainnet.helius-rpc.com?api-key=${this.apiKey}`);
-        
-        const request = {
-            jsonrpc: "2.0",
-            id: 420,
-            method: "transactionSubscribe",
-            params: [
-                {
-                    failed: false,
-                    accountInclude: ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]
-                },
-                {
-                    commitment: "confirmed",
-                    encoding: "jsonParsed",
-                    transactionDetails: "full",
-                    maxSupportedTransactionVersion: 0
-                }
-            ]
-        };
-        
-        this.ws.on('open', () => {
-            console.log('🔗 Helius Enhanced WebSocket connected');
-            this.ws.send(JSON.stringify(request));
-            this.reconnectAttempts = 0;
-        });
-        
-        this.ws.on('message', async (data) => {
-            try {
-                const messageObj = JSON.parse(data.toString('utf8'));
-                const result = messageObj.params?.result;
-                
-                if (!result) return;
-                
-                const logs = result.transaction.meta.logMessages;
-                const signature = result.signature;
-                
-                if (logs && logs.some(log => log.includes('initialize2: InitializeInstruction2'))) {
-                    console.log('🆕 New pool detected via Enhanced WebSocket!');
-                    
-                    const accountKeys = result.transaction.transaction.message.accountKeys;
-                    const baseMint = accountKeys[8]?.pubkey;
-                    const quoteMint = accountKeys[9]?.pubkey;
-                    
-                    if (baseMint && quoteMint) {
-                        const poolInfo = {
-                            address: baseMint,
-                            poolId: accountKeys[4]?.pubkey,
-                            baseMint: baseMint,
-                            quoteMint: quoteMint,
-                            symbol: 'UNKNOWN',
-                            name: 'Unknown Token',
-                            price: 0,
-                            mc: 0,
-                            liquidity: 0,
-                            lastTradeUnixTime: Math.floor(Date.now() / 1000),
-                            signature: signature,
-                            detectionMethod: 'enhanced_websocket'
-                        };
-                        
-                        this.onNewPool(poolInfo);
-                    }
-                }
-            } catch (error) {
-                console.error('Enhanced WebSocket message error:', error);
-            }
-        });
-        
-        this.ws.on('error', (error) => {
-            console.error('Enhanced WebSocket error:', error);
-        });
-        
-        this.ws.on('close', () => {
-            console.log('Enhanced WebSocket closed');
-            this.reconnect();
-        });
-        
-        // Send ping every 30 seconds to keep connection alive
-        setInterval(() => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.ping();
-            }
-        }, 30000);
-    }
-
-    reconnect() {
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            console.log(`🔄 Reconnecting... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-            setTimeout(() => this.connect(), 5000);
-        } else {
-            console.error('❌ Max reconnection attempts reached');
-        }
-    }
-}
 
 // Integration function for your existing bot
 async function integrateRealTimeMonitoring(existingSnipeFunction, existingFilterFunction) {
@@ -314,7 +210,6 @@ async function enhanceTokenInfo(poolInfo) {
 // Export for easy integration
 module.exports = {
     RealTimePoolMonitor,
-    HeliusEnhancedMonitor,
     integrateRealTimeMonitoring
 };
 

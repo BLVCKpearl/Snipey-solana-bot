@@ -5,17 +5,16 @@ Your current implementation uses Birdeye API polling every 10 seconds, which int
 
 ## Solution Overview
 
+All methods below use **free** APIs and standard protocols - no premium subscriptions required!
+
 ### 1. WebSocket-Based Monitoring (Recommended)
-Replace polling with WebSocket connections for real-time data streaming.
+Replace polling with standard Solana WebSocket connections for real-time data streaming.
 
 ### 2. Raydium Program Log Monitoring
-Monitor Raydium program logs directly for new pool creation events.
+Monitor Raydium program logs directly for new pool creation events using standard RPC methods.
 
-### 3. Enhanced RPC Providers
-Use specialized RPC providers with enhanced WebSocket capabilities.
-
-### 4. Third-Party Real-Time APIs
-Leverage services specifically designed for real-time pool detection.
+### 3. Third-Party Real-Time APIs
+Leverage free services specifically designed for real-time pool detection.
 
 ---
 
@@ -146,82 +145,7 @@ monitorWithAccountChange();
 
 ---
 
-## Method 2: Helius Enhanced WebSockets
-
-### Requirements
-- Helius Business or Professional Plan ($499/month)
-- Faster than standard WebSockets
-- Enhanced filtering capabilities
-
-```javascript
-const WebSocket = require('ws');
-
-function setupHeliusEnhancedWebSocket() {
-    const ws = new WebSocket('wss://atlas-mainnet.helius-rpc.com?api-key=YOUR_API_KEY');
-    
-    const request = {
-        jsonrpc: "2.0",
-        id: 420,
-        method: "transactionSubscribe",
-        params: [
-            {
-                failed: false,
-                accountInclude: ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"]
-            },
-            {
-                commitment: "confirmed",
-                encoding: "jsonParsed",
-                transactionDetails: "full",
-                maxSupportedTransactionVersion: 0
-            }
-        ]
-    };
-    
-    ws.on('open', () => {
-        console.log('🔗 Enhanced WebSocket connected');
-        ws.send(JSON.stringify(request));
-    });
-    
-    ws.on('message', async (data) => {
-        try {
-            const messageObj = JSON.parse(data.toString('utf8'));
-            const result = messageObj.params?.result;
-            
-            if (!result) return;
-            
-            const logs = result.transaction.meta.logMessages;
-            const signature = result.signature;
-            
-            if (logs && logs.some(log => log.includes('initialize2: InitializeInstruction2'))) {
-                console.log('🆕 New pool detected via Enhanced WebSocket!');
-                console.log('Signature:', signature);
-                
-                const accountKeys = result.transaction.transaction.message.accountKeys;
-                console.log('AMM ID:', accountKeys[2]?.pubkey);
-                
-                // Your sniping logic here
-            }
-        } catch (error) {
-            console.error('WebSocket message error:', error);
-        }
-    });
-    
-    ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-    });
-    
-    ws.on('close', () => {
-        console.log('WebSocket closed, reconnecting...');
-        setTimeout(() => setupHeliusEnhancedWebSocket(), 5000);
-    });
-}
-
-setupHeliusEnhancedWebSocket();
-```
-
----
-
-## Method 3: bloXroute Real-Time Streams
+## Method 2: bloXroute Real-Time Streams
 
 ### New Raydium Pools Stream
 
@@ -274,7 +198,7 @@ setupBloXrouteStream();
 
 ---
 
-## Method 4: PumpPortal for Pump.fun Tokens
+## Method 3: PumpPortal for Pump.fun Tokens
 
 ```javascript
 const WebSocket = require('ws');
@@ -310,57 +234,6 @@ function setupPumpPortalStream() {
 }
 
 setupPumpPortalStream();
-```
-
----
-
-## Method 5: Yellowstone gRPC (Enterprise)
-
-### Advanced streaming for high-frequency applications
-
-```javascript
-const grpc = require('@grpc/grpc-js');
-const { GeyserClient } = require('@triton-one/yellowstone-grpc');
-
-async function setupYellowstoneGRPC() {
-    const client = new GeyserClient('YOUR_YELLOWSTONE_ENDPOINT', {
-        'x-token': 'YOUR_API_KEY'
-    });
-    
-    const stream = await client.subscribe();
-    
-    stream.on('data', (data) => {
-        if (data.account && data.account.account) {
-            // Process account updates
-            console.log('Account update:', data.account.account.pubkey);
-        }
-        
-        if (data.transaction) {
-            // Process transaction updates
-            console.log('Transaction update:', data.transaction.signature);
-        }
-    });
-    
-    // Subscribe to Raydium program account changes
-    await stream.write({
-        accounts: {
-            'raydium': {
-                account: [],
-                filters: [
-                    {
-                        memcmp: {
-                            offset: 0,
-                            base58: 'YOUR_FILTER_DATA'
-                        }
-                    }
-                ],
-                owner: ['675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8']
-            }
-        }
-    });
-}
-
-setupYellowstoneGRPC();
 ```
 
 ---
@@ -452,17 +325,16 @@ async function startMonitoring() {
 |--------|---------|------|------------|----------------|
 | Birdeye Polling | 10s+ | Low | Low | Testing |
 | WebSocket onLogs | <1s | Low | Medium | Most bots |
-| Enhanced WebSocket | <500ms | High | Medium | Professional |
 | bloXroute | <200ms | Medium | Low | Commercial |
-| Yellowstone gRPC | <100ms | High | High | Enterprise |
+| PumpPortal | <1s | Free | Low | Pump.fun tokens |
 
 ---
 
 ## Next Steps
 
 1. **Immediate**: Implement WebSocket monitoring using Method 1
-2. **Short-term**: Add Helius Enhanced WebSockets if budget allows
-3. **Long-term**: Consider enterprise solutions for competitive advantage
+2. **Short-term**: Add bloXroute for faster detection if needed
+3. **Long-term**: Optimize filters and add multiple monitoring sources
 
 ## Additional Dependencies
 
@@ -480,15 +352,16 @@ Add these to your package.json:
 
 ## Important Notes
 
-- **RPC Provider**: Use a premium RPC provider (Helius, QuickNode, etc.) for best performance
+- **RPC Provider**: Use a reliable RPC provider (QuickNode, Alchemy, or your own node) for best performance
 - **Rate Limits**: WebSockets have connection limits, plan accordingly
 - **Reconnection**: Implement robust reconnection logic
 - **Error Handling**: WebSockets can disconnect, handle gracefully
 - **Filtering**: Use proper filters to reduce noise and improve performance
+- **Multiple Sources**: Consider combining multiple detection methods for redundancy
 
 ## Resources
 
-- [Helius WebSocket Documentation](https://docs.helius.dev/webhooks-and-websockets/websockets)
+- [Solana WebSocket Documentation](https://docs.solana.com/api/websocket)
 - [Raydium SDK Documentation](https://github.com/raydium-io/raydium-sdk)
 - [bloXroute Solana API](https://docs.bloxroute.com/solana)
-- [Yellowstone gRPC](https://github.com/rpcpool/yellowstone-grpc)
+- [PumpPortal Documentation](https://docs.pumpportal.fun/)
