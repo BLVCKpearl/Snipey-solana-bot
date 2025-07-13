@@ -1,6 +1,6 @@
 require('dotenv').config();
 const fetch = require('node-fetch');
-const { Connection, Keypair, PublicKey, Transaction } = require('@solana/web3.js');
+const { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
 
 const fs = require('fs');
@@ -259,14 +259,15 @@ async function checkTokenSupply(tokenMint) {
     if (data && data.parsed && data.parsed.info) {
       const supply = parseFloat(data.parsed.info.supply);
       const decimals = parseInt(data.parsed.info.decimals);
+      const uiSupply = supply / Math.pow(10, decimals);
       
       // Check if supply is reasonable (between 1M and 1T)
-      if (supply < 1_000_000) {
-        return { passed: false, reason: `Supply too low: ${supply.toLocaleString()}` };
+      if (uiSupply < 1_000_000) {
+        return { passed: false, reason: `Supply too low: ${uiSupply.toLocaleString()}` };
       }
       
-      if (supply > 1_000_000_000_000) {
-        return { passed: false, reason: `Supply too high: ${supply.toLocaleString()}` };
+      if (uiSupply > 1_000_000_000_000) {
+        return { passed: false, reason: `Supply too high: ${uiSupply.toLocaleString()}` };
       }
       
       // Check if decimals are standard (6, 8, or 9)
@@ -278,7 +279,7 @@ async function checkTokenSupply(tokenMint) {
         passed: true, 
         supply: supply, 
         decimals: decimals,
-        uiSupply: supply / Math.pow(10, decimals)
+        uiSupply: uiSupply
       };
     }
     
@@ -520,15 +521,29 @@ async function snipeToken(token) {
       console.log(`   ❌ Swap failed: ${swapResult.error}`);
       return;
     }
-    
+
+    // Fetch token decimals
+    let decimals = 9; // default
+    try {
+      const mintPubkey = new PublicKey(token.address);
+      const accountInfo = await connection.getParsedAccountInfo(mintPubkey);
+      if (accountInfo.value && accountInfo.value.data && accountInfo.value.data.parsed && accountInfo.value.data.parsed.info) {
+        decimals = parseInt(accountInfo.value.data.parsed.info.decimals);
+      }
+    } catch (e) {
+      console.log('Warning: Could not fetch decimals for', token.symbol, token.address, e.message);
+    }
+    // Convert tokensReceived to UI units
+    const tokensReceivedUI = parseFloat(quote.outAmount) / Math.pow(10, decimals);
+
     console.log(`   ✅ SNIPE SUCCESSFUL!`);
     console.log(`      Transaction: ${swapResult.signature}`);
-    console.log(`      Tokens received: ${quote.outAmount} ${token.symbol}`);
+    console.log(`      Tokens received: ${tokensReceivedUI} ${token.symbol}`);
     console.log(`      Price: $${token.price}`);
     
     // 5. Update portfolio and send notifications
-    const portfolio = addTokenToPortfolio(token, quote, swapResult.signature);
-    logSnipeToFile(token, quote, swapResult.signature);
+    const portfolio = addTokenToPortfolio(token, quote, swapResult.signature, tokensReceivedUI);
+    logSnipeToFile(token, quote, swapResult.signature, tokensReceivedUI);
     
     // Send Telegram notification
     const notification = formatSnipeNotification(token, quote, swapResult.signature);
@@ -613,16 +628,31 @@ async function buildJupiterSwap(quoteResponse) {
 
 async function executeSwap(swapTransaction, quoteResponse) {
   try {
-    // Decode the transaction
-    const transaction = Transaction.from(Buffer.from(swapTransaction, 'base64'));
-    
-    // Set recent blockhash
-    const { blockhash } = await connection.getLatestBlockhash();
-    transaction.recentBlockhash = blockhash;
-    transaction.feePayer = wallet.publicKey;
-    
-    // Sign the transaction
-    transaction.sign(wallet);
+    // Decode the transaction - handle both legacy and versioned transactions
+    let transaction;
+    try {
+      // Try to deserialize as versioned transaction first
+      transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
+      
+      // For versioned transactions, we need to sign the message
+      transaction.sign([wallet]);
+      
+    } catch (versionedError) {
+      // If that fails, try as legacy transaction
+      try {
+        transaction = Transaction.from(Buffer.from(swapTransaction, 'base64'));
+        
+        // Set recent blockhash for legacy transactions
+        const { blockhash } = await connection.getLatestBlockhash();
+        transaction.recentBlockhash = blockhash;
+        transaction.feePayer = wallet.publicKey;
+        
+        // Sign the transaction
+        transaction.sign(wallet);
+      } catch (legacyError) {
+        return { success: false, error: `Failed to deserialize transaction: ${legacyError.message}` };
+      }
+    }
     
     // Send the transaction
     const signature = await connection.sendRawTransaction(transaction.serialize());
@@ -795,44 +825,41 @@ function savePortfolio(portfolio) {
   }
 }
 
-function addTokenToPortfolio(token, quote, transactionSignature) {
+function addTokenToPortfolio(token, quote, transactionSignature, tokensReceivedUI) {
   const portfolio = loadPortfolio();
-  
+  const tokensReceived = tokensReceivedUI !== undefined ? tokensReceivedUI : parseFloat(quote.outAmount);
   const portfolioToken = {
     symbol: token.symbol,
     name: token.name,
     mint: token.address,
     snipedAt: new Date().toISOString(),
     amountUsdt: SNIPE_AMOUNT_USDT,
-    tokensReceived: quote.outAmount,
+    tokensReceived: tokensReceived,
     priceAtSnipe: token.price,
     liquidityAtSnipe: token.liquidity,
     marketCapAtSnipe: token.mc,
     transactionSignature: transactionSignature,
     currentPrice: token.price, // Will be updated later
-    currentValue: parseFloat(quote.outAmount) * token.price,
+    currentValue: tokensReceived * token.price,
     profitLoss: 0, // Will be calculated later
     profitLossPercent: 0 // Will be calculated later
   };
-  
   portfolio.tokens.push(portfolioToken);
   portfolio.totalInvested += SNIPE_AMOUNT_USDT;
   portfolio.totalValue += portfolioToken.currentValue;
   portfolio.lastUpdated = new Date().toISOString();
-  
   savePortfolio(portfolio);
-  
   console.log(`\n📊 PORTFOLIO UPDATED:`);
   console.log(`   Total tokens: ${portfolio.tokens.length}`);
   console.log(`   Total invested: $${portfolio.totalInvested.toFixed(2)}`);
   console.log(`   Current value: $${portfolio.totalValue.toFixed(2)}`);
   console.log(`   P&L: $${(portfolio.totalValue - portfolio.totalInvested).toFixed(2)} (${((portfolio.totalValue - portfolio.totalInvested) / portfolio.totalInvested * 100).toFixed(2)}%)`);
-  
   return portfolio;
 }
 
-function logSnipeToFile(token, quote, transactionSignature) {
+function logSnipeToFile(token, quote, transactionSignature, tokensReceivedUI) {
   try {
+    const tokensReceived = tokensReceivedUI !== undefined ? tokensReceivedUI : parseFloat(quote.outAmount);
     const snipeLog = {
       timestamp: new Date().toISOString(),
       token: {
@@ -845,21 +872,18 @@ function logSnipeToFile(token, quote, transactionSignature) {
       },
       snipe: {
         amountUsdt: SNIPE_AMOUNT_USDT,
-        tokensReceived: quote.outAmount,
+        tokensReceived: tokensReceived,
         priceImpact: quote.priceImpact,
         slippage: quote.slippage
       },
       transaction: transactionSignature
     };
-    
     let snipes = [];
     if (fs.existsSync(SNIPES_LOG_FILE)) {
       snipes = JSON.parse(fs.readFileSync(SNIPES_LOG_FILE, 'utf8'));
     }
-    
     snipes.push(snipeLog);
     fs.writeFileSync(SNIPES_LOG_FILE, JSON.stringify(snipes, null, 2));
-    
   } catch (error) {
     console.error('Error logging snipe:', error);
   }

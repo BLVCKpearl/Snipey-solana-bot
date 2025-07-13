@@ -6,7 +6,7 @@ const fs = require('fs');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const PORTFOLIO_FILE = 'portfolio.json';
-const SNIPES_LOG_FILE = 'snipes.json';
+const SNIPES_LOG_FILE = 'snipes_log.json';
 
 if (!TELEGRAM_BOT_TOKEN) {
   console.error('Missing TELEGRAM_BOT_TOKEN in .env');
@@ -172,7 +172,10 @@ async function handlePortfolio(chatId) {
   // Update prices for all tokens
   const updatedTokens = [];
   for (const token of portfolio.tokens) {
-    const currentPrice = await getTokenPrice(token.mint);
+    let currentPrice = await getTokenPrice(token.mint);
+    if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0 || currentPrice > 1_000_000) {
+      currentPrice = 0;
+    }
     updatedTokens.push({
       ...token,
       currentPrice: currentPrice
@@ -188,11 +191,26 @@ async function handlePortfolio(chatId) {
   
   // Calculate current values and P&L
   updatedTokens.forEach(token => {
-    if (token.currentPrice) {
-      const currentValue = parseFloat(token.tokensReceived) * token.currentPrice;
-      const tokenPnL = currentValue - token.amountUsdc;
+    const tokensReceived = parseFloat(token.tokensReceived);
+    if (
+      token.currentPrice &&
+      !isNaN(token.currentPrice) &&
+      token.currentPrice > 0 &&
+      token.currentPrice < 1_000_000 &&
+      isFinite(tokensReceived) &&
+      tokensReceived > 0
+    ) {
+      const currentValue = tokensReceived * token.currentPrice;
+      const tokenPnL = currentValue - token.amountUsdt;
       currentTotalValue += currentValue;
       totalPnL += tokenPnL;
+    } else {
+      console.log(`[SKIP] Invalid token in portfolio:`, {
+        symbol: token.symbol,
+        mint: token.mint,
+        tokensReceived: token.tokensReceived,
+        currentPrice: token.currentPrice
+      });
     }
   });
   
@@ -208,11 +226,11 @@ async function handlePortfolio(chatId) {
   
   updatedTokens.forEach((token, index) => {
     const currentValue = token.currentPrice ? parseFloat(token.tokensReceived) * token.currentPrice : 0;
-    const tokenPnL = currentValue - token.amountUsdc;
-    const tokenPnLPercent = token.amountUsdc > 0 ? (tokenPnL / token.amountUsdc * 100) : 0;
+    const tokenPnL = currentValue - token.amountUsdt;
+    const tokenPnLPercent = token.amountUsdt > 0 ? (tokenPnL / token.amountUsdt * 100) : 0;
     
     message += `${index + 1}. <b>${token.symbol}</b> (${token.name})\n`;
-    message += `   💰 Invested: $${token.amountUsdc.toFixed(2)}\n`;
+    message += `   💰 Invested: $${token.amountUsdt.toFixed(2)}\n`;
     message += `   🎯 Amount: ${parseFloat(token.tokensReceived).toLocaleString()} ${token.symbol}\n`;
     message += `   💲 Price: $${token.currentPrice ? token.currentPrice.toFixed(8) : 'N/A'}\n`;
     message += `   💎 Value: $${currentValue.toFixed(2)}\n`;
@@ -257,7 +275,7 @@ async function handleSnipes(chatId) {
     const time = new Date(snipe.timestamp).toLocaleTimeString();
     
     message += `${index + 1}. <b>${snipe.token.symbol}</b> (${snipe.token.name})\n`;
-    message += `   💰 Amount: $${snipe.snipe.amountUsdc.toFixed(2)} USDC\n`;
+    message += `   💰 Amount: $${snipe.snipe.amountUsdt.toFixed(2)} USDT\n`;
     message += `   🎯 Received: ${parseFloat(snipe.snipe.tokensReceived).toLocaleString()} ${snipe.token.symbol}\n`;
     message += `   💲 Price: $${snipe.token.price.toFixed(8)}\n`;
     message += `   📅 Date: ${date} ${time}\n`;
@@ -294,9 +312,19 @@ async function handleStats(chatId) {
   if (portfolio.tokens.length > 0) {
     // Find best and worst performers
     const tokensWithPnL = portfolio.tokens.map(token => {
-      const currentValue = token.currentValue || 0;
-      const tokenPnL = currentValue - token.amountUsdc;
-      const tokenPnLPercent = token.amountUsdc > 0 ? (tokenPnL / token.amountUsdc * 100) : 0;
+      const tokensReceived = parseFloat(token.tokensReceived);
+      const currentPrice = token.currentPrice && !isNaN(token.currentPrice) && token.currentPrice > 0 && token.currentPrice < 1_000_000 ? token.currentPrice : 0;
+      const currentValue = (isFinite(tokensReceived) && tokensReceived > 0) ? currentPrice * tokensReceived : 0;
+      const tokenPnL = currentValue - token.amountUsdt;
+      const tokenPnLPercent = token.amountUsdt > 0 ? (tokenPnL / token.amountUsdt * 100) : 0;
+      if (!(isFinite(tokensReceived) && tokensReceived > 0 && currentPrice > 0 && currentPrice < 1_000_000)) {
+        console.log(`[SKIP] Invalid token in stats:`, {
+          symbol: token.symbol,
+          mint: token.mint,
+          tokensReceived: token.tokensReceived,
+          currentPrice: token.currentPrice
+        });
+      }
       return { ...token, pnl: tokenPnL, pnlPercent: tokenPnLPercent };
     });
     
