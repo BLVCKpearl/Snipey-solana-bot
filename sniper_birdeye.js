@@ -3,6 +3,9 @@ const fetch = require('node-fetch');
 const { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
 
+// Import real-time monitoring
+const { RealTimePoolMonitor } = require('./realtime_pool_monitor');
+
 const fs = require('fs');
 const path = require('path');
 
@@ -17,9 +20,12 @@ const NEW_LISTINGS_URL = 'https://public-api.birdeye.so/defi/v2/tokens/new_listi
 const MIN_LIQUIDITY = 3000; // Lowered from 5000 to catch more new tokens
 const MIN_MARKET_CAP = 30000; // Increased from 3000 to 30000 to catch more new tokens
 const MAX_MARKET_CAP = 10000000; // Increased from 5M to 10M to catch more established tokens
-const MONITOR_INTERVAL = 10000; // 10 seconds - more frequent checks
+const MONITOR_INTERVAL = 30000; // 30 seconds - reduced since we have real-time monitoring
 const MAX_TOKEN_AGE_MINUTES = 60; // Increased from 30 to 60 minutes to catch more opportunities
 const MIN_VOLUME_24H = 5000; // Minimum 24h volume in USD
+
+// Real-time monitoring configuration
+const ENABLE_REALTIME_MONITORING = true; // Set to false to disable real-time monitoring
 
 // Known stablecoins and major tokens to exclude
 const EXCLUDED_TOKENS = [
@@ -61,10 +67,11 @@ if (!PRIVATE_KEY_BASE58) {
 const connection = new Connection(SOLANA_RPC, 'confirmed');
 const wallet = Keypair.fromSecretKey(bs58.decode(PRIVATE_KEY_BASE58));
 
-console.log('🚀 Solana Sniping Bot Started');
+console.log('🚀 Enhanced Solana Sniping Bot');
 console.log('Wallet:', wallet.publicKey.toString());
 console.log('RPC:', SOLANA_RPC);
-console.log('Monitoring interval:', MONITOR_INTERVAL / 1000, 'seconds');
+console.log('Real-time monitoring:', ENABLE_REALTIME_MONITORING ? 'Enabled' : 'Disabled');
+console.log('Backup polling interval:', MONITOR_INTERVAL / 1000, 'seconds');
 console.log('Sniping amount:', SNIPE_AMOUNT_USDT, 'USDT');
 console.log('Telegram notifications:', ENABLE_TELEGRAM ? 'Enabled' : 'Disabled');
 console.log('='.repeat(80));
@@ -986,15 +993,136 @@ function formatPortfolioUpdate(portfolio) {
 ⏰ <b>Updated:</b> ${new Date().toLocaleString()}`;
 }
 
+// Real-time pool detection functions
+function passesRealTimeFilters(poolInfo) {
+  console.log('🔍 Applying real-time filters for:', poolInfo.address);
+  
+  // Skip if we don't have minimum required info
+  if (!poolInfo.address || !poolInfo.baseMint || !poolInfo.quoteMint) {
+    console.log('❌ Missing required pool info');
+    return false;
+  }
+  
+  // Check if it's a SOL pair (most common for sniping)
+  if (poolInfo.quoteMint !== 'So11111111111111111111111111111111111111112') {
+    console.log('❌ Not a SOL pair');
+    return false;
+  }
+  
+  // Skip known excluded tokens
+  if (EXCLUDED_TOKENS.includes(poolInfo.address)) {
+    console.log('❌ Token in excluded list');
+    return false;
+  }
+  
+  return true;
+}
+
+async function enhanceRealTimePoolInfo(poolInfo) {
+  try {
+    console.log('📊 Enhancing real-time pool info for:', poolInfo.address);
+    
+    // Create enhanced object compatible with existing functions
+    const enhanced = {
+      address: poolInfo.address,
+      symbol: 'UNKNOWN',
+      name: 'Unknown Token',
+      price: 0,
+      mc: 0,
+      liquidity: 0,
+      volume24h: 0,
+      lastTradeUnixTime: Math.floor(Date.now() / 1000),
+      // Add real-time specific fields
+      poolId: poolInfo.poolId,
+      baseMint: poolInfo.baseMint,
+      quoteMint: poolInfo.quoteMint,
+      signature: poolInfo.signature,
+      detectionMethod: poolInfo.detectionMethod || 'realtime'
+    };
+    
+    // You could add more sophisticated data fetching here
+    // For now, we'll let the existing safety checks handle detailed validation
+    
+    return enhanced;
+  } catch (error) {
+    console.error('Error enhancing real-time pool info:', error);
+    return null;
+  }
+}
+
+async function handleRealTimePool(poolInfo) {
+  try {
+    console.log('\n⚡ REAL-TIME POOL DETECTED!');
+    console.log('Token:', poolInfo.address);
+    console.log('Detection Method:', poolInfo.detectionMethod);
+    console.log('Signature:', poolInfo.signature || 'N/A');
+    
+    // Apply initial real-time filters
+    if (!passesRealTimeFilters(poolInfo)) {
+      console.log('❌ Pool filtered out by real-time filters');
+      return;
+    }
+    
+    // Enhance pool info to match existing format
+    const enhancedInfo = await enhanceRealTimePoolInfo(poolInfo);
+    if (!enhancedInfo) {
+      console.log('❌ Could not enhance pool info');
+      return;
+    }
+    
+    // Apply existing comprehensive filters
+    if (!passesSnipeFilters(enhancedInfo)) {
+      console.log('❌ Pool filtered out by existing filters');
+      return;
+    }
+    
+    console.log('🎯 Real-time pool passes filters, checking safety...');
+    
+    // Check token safety
+    const safetyCheck = await checkTokenSafety(enhancedInfo);
+    if (!safetyCheck) {
+      console.log('❌ Token failed safety checks');
+      return;
+    }
+    
+    console.log('✅ Real-time pool passed all checks, attempting snipe...');
+    
+    // Execute snipe using existing function
+    await snipeToken(enhancedInfo);
+    
+  } catch (error) {
+    console.error('❌ Real-time pool handling failed:', error);
+  }
+}
+
 // Start monitoring
 async function startMonitoring() {
-  console.log('Starting continuous monitoring...\n');
+  console.log('🚀 Starting Enhanced Solana Sniping Bot...\n');
   
-  // Initial fetch
+  // Start real-time monitoring if enabled
+  if (ENABLE_REALTIME_MONITORING) {
+    try {
+      console.log('⚡ Setting up real-time pool monitoring...');
+      const realTimeMonitor = new RealTimePoolMonitor(handleRealTimePool);
+      await realTimeMonitor.startMonitoring();
+      console.log('✅ Real-time monitoring active!\n');
+    } catch (error) {
+      console.error('❌ Failed to start real-time monitoring:', error);
+      console.log('⚠️ Continuing with Birdeye polling only...\n');
+    }
+  }
+  
+  // Initial Birdeye fetch
+  console.log('📊 Starting Birdeye polling (backup monitoring)...');
   await fetchAndAnalyzeTokens();
   
-  // Set up continuous monitoring
+  // Set up continuous Birdeye monitoring (now as backup)
   setInterval(fetchAndAnalyzeTokens, MONITOR_INTERVAL);
+  
+  console.log('🎯 Hybrid monitoring active:');
+  console.log('   ⚡ Real-time: WebSocket detection (<1s latency)');
+  console.log('   📊 Backup: Birdeye polling every', MONITOR_INTERVAL / 1000, 'seconds');
+  console.log('='.repeat(80));
 }
 
 // Handle graceful shutdown
